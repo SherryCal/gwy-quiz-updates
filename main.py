@@ -112,6 +112,10 @@ class App(QWidget):
         act_export.triggered.connect(self._export_wrong)
         menu.addAction(act_export)
 
+        act_report = QAction("📊 刷题总结", self)
+        act_report.triggered.connect(self._show_report)
+        menu.addAction(act_report)
+
         act_update = QAction("🔄 检查更新", self)
         act_update.triggered.connect(self._check_update)
         menu.addAction(act_update)
@@ -187,6 +191,11 @@ class App(QWidget):
         self.tray.showMessage(
             "公考刷题", f"错题本已导出：{os.path.basename(path)}",
             QSystemTrayIcon.Information, 3000)
+
+    def _show_report(self):
+        from report_dialog import ReportDialog
+        dlg = ReportDialog(self._conn, self)
+        dlg.exec_()
 
     def _check_update(self):
         from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel, QPlainTextEdit, QDialogButtonBox

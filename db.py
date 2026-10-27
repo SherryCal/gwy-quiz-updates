@@ -177,6 +177,218 @@ def stats(conn):
     return {"total": total, "done": done, "wrong": wrong, "rate": rate}
 
 
+# ---------- 时间维度统计（日报/周报/月报） ----------
+
+def _bucket(period):
+    """SQLite strftime 格式：day=%Y-%m-%d  week=周一起始  month=%Y-%m"""
+    return {"day": "%Y-%m-%d", "week": "%Y-W%W", "month": "%Y-%m"}[period]
+
+
+def _period_where(period, conn):
+    """返回 (where_clause, params) 限定该 period 的时间范围"""
+    # SQLite datetime('now', 'localtime') 是当前本地时间
+    if period == "day":
+        return "AND date(p.last_at, 'localtime') = date('now', 'localtime')", []
+    if period == "week":
+        # SQLite 的周一起始：strftime('%W', date) 返回周数，新年第1周从第一个周一开始
+        return (
+            "AND strftime('%Y-W%W', p.last_at, 'localtime') = strftime('%Y-W%W', date('now','localtime'), 'localtime')",
+            [],
+        )
+    if period == "month":
+        return (
+            "AND strftime('%Y-%m', p.last_at, 'localtime') = strftime('%Y-%m', date('now','localtime'), 'localtime')",
+            [],
+        )
+    return "", []
+
+
+def stats_overall(conn, period="day"):
+    """返回该 period 的总量统计 dict"""
+    where, params = _period_where(period, conn)
+    row = conn.execute(
+        f"""SELECT COALESCE(SUM(p.attempts),0) attempts,
+                   COALESCE(SUM(p.wrong),0) wrong,
+                   COUNT(DISTINCT p.question_id) unique_q
+            FROM progress p
+            WHERE p.last_at IS NOT NULL {where}""",
+        params,
+    ).fetchone()
+    a = row["attempts"] or 0
+    w = row["wrong"] or 0
+    return {
+        "attempts": a,
+        "wrong": w,
+        "correct": a - w,
+        "unique_q": row["unique_q"] or 0,
+        "rate": round((1 - w / a) * 100, 1) if a else 0.0,
+    }
+
+
+def stats_by_module(conn, period="day"):
+    """返回 [(module, attempts, wrong, unique_q, rate), ...] 按 attempts 降序"""
+    where, params = _period_where(period, conn)
+    rows = conn.execute(
+        f"""SELECT q.module,
+                   COALESCE(SUM(p.attempts),0) attempts,
+                   COALESCE(SUM(p.wrong),0) wrong,
+                   COUNT(DISTINCT p.question_id) unique_q
+            FROM progress p
+            JOIN questions q ON q.id = p.question_id
+            WHERE p.last_at IS NOT NULL {where}
+            GROUP BY q.module
+            ORDER BY attempts DESC""",
+        params,
+    ).fetchall()
+    out = []
+    for r in rows:
+        a = r["attempts"] or 0
+        w = r["wrong"] or 0
+        out.append({
+            "module": r["module"],
+            "attempts": a,
+            "wrong": w,
+            "correct": a - w,
+            "unique_q": r["unique_q"] or 0,
+            "rate": round((1 - w / a) * 100, 1) if a else 0.0,
+        })
+    return out
+
+
+def stats_trend(conn, period="day", limit=7):
+    """返回最近 N 个时间桶的总量，用于画趋势
+    day: 最近 7 天, week: 最近 8 周, month: 最近 6 月"""
+    fmt = _bucket(period)
+    rows = conn.execute(
+        f"""SELECT strftime('{fmt}', p.last_at, 'localtime') bucket,
+                   COALESCE(SUM(p.attempts),0) attempts,
+                   COALESCE(SUM(p.wrong),0) wrong,
+                   COUNT(DISTINCT p.question_id) unique_q
+            FROM progress p
+            WHERE p.last_at IS NOT NULL
+            GROUP BY bucket
+            ORDER BY bucket DESC
+            LIMIT {int(limit)}"""
+    ).fetchall()
+    rows = list(reversed(rows))  # 升序
+    out = []
+    for r in rows:
+        a = r["attempts"] or 0
+        w = r["wrong"] or 0
+        out.append({
+            "bucket": r["bucket"],
+            "attempts": a,
+            "wrong": w,
+            "rate": round((1 - w / a) * 100, 1) if a else 0.0,
+        })
+    return out
+
+
+def _count_streak(conn, period):
+    """计算连续 N 个 period 都至少做了 1 道题"""
+    fmt = _bucket(period)
+    rows = conn.execute(
+        f"""SELECT DISTINCT strftime('{fmt}', p.last_at, 'localtime') bucket
+            FROM progress p
+            WHERE p.last_at IS NOT NULL
+            ORDER BY bucket DESC"""
+    ).fetchall()
+    buckets = {r["bucket"] for r in rows}
+    from datetime import datetime, timedelta
+    today = datetime.now()
+    # 生成从今天往前 60 天/月 的 bucket，逐个看在不在集合里
+    streak = 0
+    for i in range(365):
+        if period == "day":
+            d = today - timedelta(days=i)
+            bkt = d.strftime("%Y-%m-%d")
+        elif period == "week":
+            d = today - timedelta(weeks=i)
+            bkt = d.strftime("%Y-W%W")
+        elif period == "month":
+            d = today.replace(day=1)
+            from calendar import monthrange
+            while i > 0:
+                d = (d - timedelta(days=1)).replace(day=1)
+                i -= 1
+            bkt = d.strftime("%Y-%m")
+        else:
+            break
+        if bkt in buckets:
+            streak += 1
+        elif i > 0:
+            # 中间空了就停（但今天没做不算断）
+            break
+        else:
+            # 今天没做也不算断 streak，从昨天开始算
+            continue
+    return streak
+
+
+def generate_advice(conn, period="week"):
+    """基于该 period 的数据生成提升建议，返回 list[str]"""
+    advices = []
+    overall = stats_overall(conn, period)
+    modules = stats_by_module(conn, period)
+    streak = _count_streak(conn, "day") if period != "month" else 0
+
+    if overall["attempts"] == 0:
+        advices.append(f"⚠️ 这个{period_dict(period)}你还没刷题，今天开始吧！")
+        return advices
+
+    # 1. 正确率
+    if overall["rate"] < 60:
+        advices.append(f"🚨 总正确率只有 {overall['rate']:.0f}%，低于 60% 警戒线——建议先放慢速度、看清题干再选。")
+    elif overall["rate"] < 75:
+        advices.append(f"📉 总正确率 {overall['rate']:.0f}%，还有提升空间——多复盘错题解析。")
+    else:
+        advices.append(f"✅ 总正确率 {overall['rate']:.0f}%，继续保持！")
+
+    # 2. 薄弱模块（正确率 < 60% 且做题 ≥ 5 道）
+    weak = [m for m in modules if m["attempts"] >= 5 and m["rate"] < 60]
+    for wm in weak:
+        advices.append(
+            f"🎯 **{wm['module']}** 正确率仅 {wm['rate']:.0f}%（{wm['attempts']} 题），"
+            f"建议集中刷 20 道同模块题、细看解析。"
+        )
+
+    # 3. 高频错题模块
+    high_wrong = sorted(modules, key=lambda m: m["wrong"], reverse=True)[:2]
+    if high_wrong and high_wrong[0]["wrong"] >= 3:
+        hw = high_wrong[0]
+        advices.append(
+            f"🔥 **{hw['module']}** 错题最多（{hw['wrong']} 道），"
+            f"用「🔥 错题重练」再过一遍。"
+        )
+
+    # 4. 刷题量
+    if period == "day":
+        if overall["attempts"] < 20:
+            advices.append(f"📚 今天只做了 {overall['attempts']} 题，目标建议 ≥ 40 题/天。")
+        elif overall["attempts"] >= 60:
+            advices.append(f"💪 今天刷了 {overall['attempts']} 题，量够了，记得复盘！")
+    elif period == "week":
+        if overall["attempts"] < 100:
+            advices.append(f"📅 本周只做了 {overall['attempts']} 题，建议每周 ≥ 200 题。")
+    elif period == "month":
+        if overall["attempts"] < 400:
+            advices.append(f"🗓️ 本月只做了 {overall['attempts']} 题，建议每月 ≥ 800 题。")
+
+    # 5. 连续打卡
+    if streak >= 7:
+        advices.append(f"🔥 连续打卡 **{streak} 天**！坚持就是胜利。")
+    elif streak >= 3:
+        advices.append(f"✨ 连续打卡 {streak} 天，别断！")
+    elif overall["attempts"] > 0 and streak == 0:
+        advices.append("⏰ 今天还没刷题，10 分钟就能做 5 道！")
+
+    return advices
+
+
+def period_dict(period):
+    return {"day": "今天", "week": "本周", "month": "本月"}[period]
+
+
 def export_wrong_markdown(conn, out_path=None):
     """导出错题本为 Markdown，返回实际写的路径"""
     rows = conn.execute(
