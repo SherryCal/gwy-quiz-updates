@@ -17,7 +17,7 @@ from datetime import datetime
 
 # ===== 用户自己改这两个 =====
 # 你的 GitHub 用户名
-GH_USER = "your-github-username"
+GH_USER = "SherryCal"
 # 推代码的 repo 名
 GH_REPO = "gwy-quiz-updates"
 # 分支（main 或 master）
