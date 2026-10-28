@@ -1,12 +1,13 @@
 """隐蔽模式快捷刷题弹窗 - 可 resize + 自绘黑标题栏
-关键：边缘 resize 直接在 Dialog 自己的 mouse 事件里处理，不用 overlay widget
-Qt 规则：子控件（按钮）先收到事件，如果它们 accept 了就不冒泡到父 Dialog
+关键：边缘 resize 直接在 Widget 自己的 mouse 事件里处理，不用 overlay widget
+Qt 规则：子控件（按钮）先收到事件，如果它们 accept 了就不冒泡到父 Widget
+macOS 注意：必须用 Qt.Window 而不是 Qt.Dialog，否则会变成 QNSPanel 永远置顶
 """
 import sys
 from PyQt5.QtCore import Qt, QRect, QPoint
 from PyQt5.QtGui import QPalette, QColor, QCursor
 from PyQt5.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
 from db import fetch_questions, record_answer
@@ -20,7 +21,7 @@ MARGIN = 6        # 边缘感应区宽度
 MIN_W, MIN_H = 480, 360
 
 
-class PopupQuiz(QDialog):
+class PopupQuiz(QWidget):
     def __init__(self, conn, module=None, wrong_only=False, paper=None):
         super().__init__()
         self.conn = conn
@@ -32,8 +33,9 @@ class PopupQuiz(QDialog):
         self.setWindowTitle("公考刷题")
         self.setAttribute(Qt.WA_NoSystemBackground, True)
 
+        # Qt.Window 而不是 Qt.Dialog：后者在 macOS 上会变成 QNSPanel，永远置顶
         self.setWindowFlags(
-            Qt.Dialog | Qt.FramelessWindowHint
+            Qt.Window | Qt.FramelessWindowHint
             | Qt.WindowMinimizeButtonHint | Qt.WindowCloseButtonHint)
 
         pal = _make_palette()

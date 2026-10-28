@@ -155,7 +155,8 @@ class App(QWidget):
             return
         dlg = PopupQuiz(self._conn, module=module, wrong_only=wrong_only, paper=paper)
         dlg.setAttribute(Qt.WA_DeleteOnClose)
-        dlg.finished.connect(lambda r, d=dlg: self._popups.remove(d) if d in self._popups else None)
+        # QWidget 没有 finished 信号，用 destroyed
+        dlg.destroyed.connect(lambda o, d=dlg: self._popups.remove(d) if d in self._popups else None)
         self._popups.append(dlg)
         dlg.show()
         dlg.raise_()
