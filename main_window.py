@@ -13,18 +13,40 @@ from quiz_card import *  # 导入 Trae CN 配色
 # main_window.py 额外需要的配色（quiz_card 里没定义的）
 BORDER_LT = "#454545"
 
-# macOS 透明黑标题栏 - 有 PyObjC 就用，没有就 FramelessWindowHint 兜底
+# macOS 透明黑标题栏 + 强制普通窗口层级 + 清理 collectionBehavior
+# FramelessWindowHint 在 macOS 上会偷偷把 collectionBehavior 设成 MoveToActiveSpace(256)，
+# 导致窗口在 Spaces 间乱跳、层级异常。这里一并修正。
 def apply_macos_transparent_titlebar(widget):
     if sys.platform != "darwin":
         return False
     try:
-        import objc
-        from AppKit import NSWindow, NSWindowTitleHidden
-        ns_win = objc.objc_object(ctypes=(int,))(int(widget.winId()))
+        from AppKit import (NSApp, NSWindowTitleHidden, NSNormalWindowLevel,
+                            NSWindowCollectionBehaviorCanJoinAllSpaces,
+                            NSWindowCollectionBehaviorFullScreenAuxiliary,
+                            NSWindowCollectionBehaviorParticipatesInCycle)
+        # Qt 的 winId 不是 NSWindow 指针，要通过标题匹配找到真正的 NSWindow
+        title = widget.windowTitle()
+        ns_win = None
+        for w in NSApp.windows():
+            if w.title() == title or (not w.title() and widget.isVisible()):
+                # Qt 的 FramelessWindowHint 窗口标题常常为空，取第一个可见的
+                ns_win = w
+                break
+        if ns_win is None and NSApp.keyWindow():
+            ns_win = NSApp.keyWindow()
+        if ns_win is None:
+            return False
         ns_win.setTitlebarAppearsTransparent_(True)
         ns_win.setTitleVisibility_(NSWindowTitleHidden)
         ns_win.setMovableByWindowBackground_(True)
         ns_win.setHasShadow_(False)
+        # FramelessWindowHint 会让窗口变成 floating panel（永远置顶），强制设回普通层级
+        ns_win.setLevel_(NSNormalWindowLevel)
+        # 清理 MoveToActiveSpace(256)，保留跨 Space 跟随但不强制跳来跳去
+        ns_win.setCollectionBehavior_(
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+            | NSWindowCollectionBehaviorParticipatesInCycle)
         return True
     except Exception:
         return False
