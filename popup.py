@@ -34,7 +34,6 @@ class PopupQuiz(QDialog):
 
         self.setWindowFlags(
             Qt.Window | Qt.FramelessWindowHint
-            | Qt.WindowStaysOnTopHint
             | Qt.WindowMinimizeButtonHint | Qt.WindowCloseButtonHint)
 
         pal = _make_palette()
