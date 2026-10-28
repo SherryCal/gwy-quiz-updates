@@ -218,7 +218,15 @@ def _migrate_question_data(conn):
 
 # ---------- 图片按需解析：本地 repo → 缓存目录 → GitHub 下载 ----------
 
-IMAGE_REMOTE_BASE = "https://raw.githubusercontent.com/ERRRC/xingcezhenti/main"
+# 国内直连 raw.githubusercontent.com 常常超时，优先走 jsDelivr（有国内 CDN）
+IMAGE_REMOTE_BASES = [
+    "https://cdn.jsdelivr.net/gh/ERRRC/xingcezhenti@main",
+    "https://raw.githubusercontent.com/ERRRC/xingcezhenti/main",
+]
+# 记住第一个成功的镜像，后续图片不再重复试错
+_working_image_base = None
+# 所有镜像都失败过一次后直接放弃，避免每张图都卡十几秒
+_image_offline = False
 
 
 def _image_cache_dir():
@@ -245,21 +253,34 @@ def resolve_image(path):
     if os.path.isfile(cached) and os.path.getsize(cached) > 0:
         return cached
 
-    # 3) 从 GitHub 下载并缓存
+    # 3) 从 GitHub 下载并缓存（多镜像轮询）
+    global _working_image_base, _image_offline
+    if _image_offline:
+        return None
     import urllib.request
     from urllib.parse import quote
-    url = f"{IMAGE_REMOTE_BASE}/{quote(rel)}"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "gwy-quiz"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = resp.read()
-        os.makedirs(os.path.dirname(cached), exist_ok=True)
-        with open(cached, "wb") as f:
-            f.write(data)
-        return cached
-    except Exception as e:
-        print(f"[gwy-quiz] 图片下载失败 {rel}: {e}")
-        return None
+
+    bases = ([_working_image_base] if _working_image_base else []) + IMAGE_REMOTE_BASES
+    for base in bases:
+        url = f"{base}/{quote(rel)}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "gwy-quiz"})
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                data = resp.read()
+            if not data:
+                continue
+            os.makedirs(os.path.dirname(cached), exist_ok=True)
+            with open(cached, "wb") as f:
+                f.write(data)
+            _working_image_base = base
+            return cached
+        except Exception as e:
+            print(f"[gwy-quiz] 镜像下载失败 {base}: {e}")
+            continue
+
+    _image_offline = True
+    print(f"[gwy-quiz] 图片下载失败（所有镜像不可用，本次运行不再尝试）{rel}")
+    return None
 
 
 def record_answer(conn, question_id, chosen, correct):

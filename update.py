@@ -24,7 +24,33 @@ GH_REPO = "gwy-quiz-updates"
 GH_BRANCH = "main"
 # ============================
 
-REPO_RAW = f"https://raw.githubusercontent.com/{GH_USER}/{GH_REPO}/{GH_BRANCH}"
+# 国内直连 raw.githubusercontent.com 常常超时，优先走 jsDelivr（有国内 CDN）
+REPO_BASES = [
+    f"https://cdn.jsdelivr.net/gh/{GH_USER}/{GH_REPO}@{GH_BRANCH}",
+    f"https://raw.githubusercontent.com/{GH_USER}/{GH_REPO}/{GH_BRANCH}",
+]
+# 记住第一个可用的镜像，避免每个文件都重试超时
+_working_base = None
+
+
+def _http_get(path, timeout=6):
+    global _working_base
+    bases = ([_working_base] if _working_base else []) + REPO_BASES
+    last_err = None
+    for base in bases:
+        # TLS 握手偶发超时，每个镜像多试一次
+        for attempt in range(2):
+            try:
+                req = urllib.request.Request(
+                    f"{base}/{path}", headers={"User-Agent": "gwy-quiz-update"})
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    data = r.read().decode("utf-8", errors="replace")
+                _working_base = base
+                return data
+            except Exception as e:
+                last_err = e
+                continue
+    raise last_err if last_err else RuntimeError("no mirror available")
 
 # 要推到 git 的文件白名单（只 .py + version.txt + requirements.txt）
 PUSH_FILES = [
@@ -34,34 +60,26 @@ PUSH_FILES = [
 ]
 
 
-def _http_get(url, timeout=8):
-    req = urllib.request.Request(url, headers={"User-Agent": "gwy-quiz-update"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", errors="replace")
-
-
 def _remote_version():
     """拉远程 version.txt"""
-    url = f"{REPO_RAW}/version.txt"
     try:
-        txt = _http_get(url)
+        txt = _http_get("version.txt")
         for line in txt.strip().split("\n"):
             if "=" in line:
                 k, v = line.split("=", 1)
                 if k.strip().lower() == "version":
                     return v.strip()
         return None
-    except (urllib.error.URLError, urllib.error.HTTPError):
+    except Exception:
         return None
 
 
 def _remote_file_sha(filename):
     """拉远程文件并算 SHA（用于判断有没有变）"""
-    url = f"{REPO_RAW}/{filename}"
     try:
-        content = _http_get(url)
+        content = _http_get(filename)
         return hashlib.sha256(content.encode("utf-8")).hexdigest(), content
-    except (urllib.error.URLError, urllib.error.HTTPError):
+    except Exception:
         return None, None
 
 
@@ -82,7 +100,9 @@ def check_and_update(current_version, progress=None):
 
     remote_ver = _remote_version()
     if remote_ver is None:
-        return False, "无法连接更新服务器（检查下 GitHub 用户名和 repo 名对不对）"
+        return False, ("无法连接更新服务器\n\n"
+                       "常见原因：网络访问 GitHub 超时（国内直连不通）。\n"
+                       "可尝试：换网络 / 开代理 / 使用已下载好的完整安装包。")
 
     if remote_ver == current_version:
         return False, f"当前版本已是最新（v{current_version}）"
@@ -178,4 +198,14 @@ if __name__ == "__main__":
     subprocess.run(["git", "add"] + PUSH_FILES, check=False)
     subprocess.run(["git", "commit", "-m", f"update v{new_ver}"], check=False)
     subprocess.run(["git", "push"], check=False)
+
+    # 3. 通知 jsDelivr 清缓存，否则朋友那边可能拿到旧文件
+    try:
+        purge = f"https://purge.jsdelivr.net/gh/{GH_USER}/{GH_REPO}@{GH_BRANCH}/*"
+        with urllib.request.urlopen(purge, timeout=25) as r:
+            r.read()
+        print("jsDelivr 缓存已刷新 ✓")
+    except Exception as e:
+        print(f"jsDelivr 清缓存失败（不影响推送）: {e}")
+
     print("推送完成 ✓（如果报 git 错误，先跑 gh auth login + gh repo create 初始化）")
