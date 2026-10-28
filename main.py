@@ -12,7 +12,7 @@ import os
 import sys
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QIcon, QPainter, QPixmap, QColor, QBrush
+from PyQt5.QtGui import QIcon, QPainter, QPixmap, QColor, QBrush, QFont
 from PyQt5.QtWidgets import (
     QAction, QApplication, QComboBox, QDialog, QDialogButtonBox,
     QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
@@ -39,14 +39,14 @@ def _load_version():
 
 
 def make_icon():
-    """画一个齿轮形状的托盘图标"""
-    pix = QPixmap(64, 64)
+    """托盘图标：⚙️ emoji 渲染（Apple Color Emoji）"""
+    pix = QPixmap(128, 128)
     pix.fill(Qt.transparent)
-    p = QPainter(pix); p.setRenderHint(QPainter.Antialiasing)
-    p.setBrush(QBrush(QColor("#B366FF"))); p.setPen(Qt.NoPen)
-    p.drawEllipse(18, 18, 28, 28)          # 外圈
-    p.setBrush(QBrush(QColor("#1E1E1E")))
-    p.drawEllipse(26, 26, 12, 12)          # 内圈
+    p = QPainter(pix)
+    f = QFont("Apple Color Emoji")
+    f.setPixelSize(112)
+    p.setFont(f)
+    p.drawText(pix.rect(), Qt.AlignCenter, "⚙️")
     p.end()
     return QIcon(pix)
 
