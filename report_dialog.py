@@ -12,8 +12,8 @@ BG_EDITOR  = "#1E1E1E"
 BG_SUB     = "#252526"
 BG_HOVER   = "#2A2D2E"
 FG_MAIN    = "#D4D4D4"
-FG_DIM     = "#808080"
-FG_DIMMER  = "#6A6A6A"
+FG_DIM     = "#A8A8A8"   # 调亮：黑底上 808080 看不清
+FG_DIMMER  = "#909090"   # 调亮：图表次要文字
 ACCENT     = "#264F78"
 CORRECT    = "#4EC9B0"
 WRONG      = "#F48771"
@@ -30,6 +30,8 @@ QDialog {{
     font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
     font-size: 13px;
 }}
+QWidget#ReportPanel {{ background: {BG_EDITOR}; }}
+QWidget#ReportPanel QLabel {{ color: {FG_MAIN}; }}
 QTabWidget::pane {{ border: 1px solid {BG_HOVER}; top: -1px; background: {BG_EDITOR}; }}
 QTabBar::tab {{
     background: {BG_SUB}; color: {FG_DIM}; padding: 8px 20px;
@@ -82,6 +84,21 @@ class BarChart(QWidget):
         if not self._data:
             p.setPen(QColor(FG_DIM))
             p.drawText(QRect(0, 0, w, h), Qt.AlignCenter, "本期暂无数据")
+            return
+
+        # 单组数据：不画柱，直接大字显示
+        if len(self._data) == 1:
+            m = self._data[0]
+            font = QFont(); font.setPointSize(20); font.setBold(True); p.setFont(font)
+            p.setPen(QColor(WHITE))
+            p.drawText(QRect(0, 0, w, h // 2 + 10), Qt.AlignCenter,
+                       f"{m['module']}：{m['attempts']} 题")
+            font.setPointSize(16); p.setFont(font)
+            rate_color = CORRECT if m["rate"] >= 70 else (WRONG if m["rate"] < 60 else FG_MAIN)
+            p.setPen(QColor(rate_color))
+            p.drawText(QRect(0, h // 2, w, h // 2), Qt.AlignCenter,
+                       f"正确率 {m['rate']:.0f}%（对 {m['correct']} / 错 {m['wrong']}）")
+            p.end()
             return
 
         n = len(self._data)
@@ -165,6 +182,16 @@ class TrendChart(QWidget):
             p.drawText(QRect(0, 0, w, h), Qt.AlignCenter, "暂无趋势数据")
             return
 
+        # 单组数据：不画柱，直接显示数字
+        if len(self._data) == 1:
+            d = self._data[0]
+            font = QFont(); font.setPointSize(18); font.setBold(True); p.setFont(font)
+            p.setPen(QColor(WHITE))
+            p.drawText(QRect(0, 0, w, h), Qt.AlignCenter,
+                       f"{d['bucket']}：{d['attempts']} 题")
+            p.end()
+            return
+
         margin_left = 30
         margin_bottom = 22
         margin_top = 8
@@ -223,7 +250,7 @@ def make_card(title, big_value, sub1, sub2=None):
 def period_panel(period, conn, close_btn):
     """返回一个 QWidget，展示该 period 的统计"""
     w = QWidget()
-    w.setStyleSheet(f"background: {BG_EDITOR};")
+    w.setObjectName("ReportPanel")  # 让样式表里的颜色规则生效
     layout = QVBoxLayout(w)
     layout.setContentsMargins(16, 12, 16, 12)
     layout.setSpacing(12)
@@ -306,24 +333,40 @@ class ReportDialog(QDialog):
         self.setMinimumSize(720, 560)
         self.resize(880, 640)
         self.setStyleSheet(DIALOG_STYLE)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        # 和 popup 统一：无边框 + 自绘黑标题栏（有 PyObjC 时自动透明黑）
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        from quiz_card import _make_palette
+        self.setPalette(_make_palette())
+        self.setAutoFillBackground(True)
+        self._drag_pos = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # 标题栏（自绘黑条，因为继承 QDialog 已经有系统栏，但加个 header 标题）
-        header = QFrame()
-        header.setStyleSheet(f"background: {BG_SUB}; border-bottom: 1px solid {BG_HOVER};")
-        header.setFixedHeight(44)
-        hl = QHBoxLayout(header)
-        hl.setContentsMargins(16, 0, 16, 0)
-        t = QLabel("📊 刷题总结")
-        t.setObjectName("Title"); hl.addWidget(t)
-        hl.addStretch()
-        close_btn = QPushButton("关闭"); close_btn.setFixedWidth(80)
-        close_btn.clicked.connect(self.accept); hl.addWidget(close_btn)
-        root.addWidget(header)
+        # 自绘黑标题栏（和 popup 同款 28px 黑条 + 透明黑按钮）
+        bar = QWidget(); bar.setFixedHeight(28)
+        bar.setStyleSheet(f"QWidget {{ background: {BG_EDITOR}; }}")
+        bar_l = QHBoxLayout(bar)
+        bar_l.setContentsMargins(12, 0, 8, 0); bar_l.setSpacing(6)
+        tip = QLabel("📊 刷题总结")
+        tip.setStyleSheet(f"color: {FG_DIM}; font-size: 11px; background: transparent;")
+        bar_l.addWidget(tip); bar_l.addStretch(1)
+
+        btn_style = (f"QPushButton {{ background: rgba(0, 0, 0, 60); border: 1px solid #3C3C3C;"
+                     f" border-radius: 2px; color: {FG_MAIN}; font-size: 10px; font-weight: bold; }}"
+                     f"QPushButton:hover {{ background: rgba(0, 0, 0, 140); border-color: {FG_DIM}; }}")
+        min_btn = QPushButton("－"); min_btn.setFixedSize(22, 16)
+        min_btn.setStyleSheet(btn_style)
+        min_btn.clicked.connect(self.showMinimized)
+        bar_l.addWidget(min_btn)
+        close_btn = QPushButton("×"); close_btn.setFixedSize(22, 16)
+        close_btn.setStyleSheet(btn_style)
+        close_btn.clicked.connect(self.accept)
+        bar_l.addWidget(close_btn)
+        root.addWidget(bar)
+        self._bar = bar
 
         # Tab
         self.tabs = QTabWidget()
@@ -331,6 +374,31 @@ class ReportDialog(QDialog):
         self.tabs.addTab(self._make_tab("week"), "📈 周报")
         self.tabs.addTab(self._make_tab("month"), "🗓️ 月报")
         root.addWidget(self.tabs, 1)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        from main_window import apply_macos_transparent_titlebar
+        if apply_macos_transparent_titlebar(self):
+            self._bar.hide()
+
+    # --- 标题栏拖动（无边框后需要自绘）---
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton and e.y() < 28:
+            self._drag_pos = e.globalPos() - self.frameGeometry().topLeft()
+            e.accept()
+        else:
+            super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._drag_pos is not None and e.buttons() & Qt.LeftButton:
+            self.move(e.globalPos() - self._drag_pos)
+            e.accept()
+        else:
+            super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        self._drag_pos = None
+        super().mouseReleaseEvent(e)
 
     def _make_tab(self, period):
         panel = period_panel(period, self.conn, None)

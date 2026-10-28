@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS questions (
     analysis        TEXT,
     source_file     TEXT,
     shared_passage  TEXT,                -- 共享文章/材料（一材多题的"材"）
-    images          TEXT,                -- JSON 数组，每元素是图片绝对路径（GUI渲图用）
+    images          TEXT,                -- JSON 数组，每元素是仓库相对路径（resolve_image 解析成本地文件）
     UNIQUE(qid, paper, module)
 );
 CREATE INDEX IF NOT EXISTS idx_q_module ON questions(module);
@@ -96,6 +96,7 @@ def get_conn():
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     _migrate(conn)  # 给旧库补新列
+    _migrate_question_data(conn)  # 老包题库缺图/缺文章时从随包库回填
     return conn
 
 
@@ -106,6 +107,159 @@ def _migrate(conn):
         conn.execute("ALTER TABLE questions ADD COLUMN shared_passage TEXT")
     if "images" not in cols:
         conn.execute("ALTER TABLE questions ADD COLUMN images TEXT")
+    _migrate_image_paths(conn)
+
+
+def _to_rel_image_path(p):
+    """绝对路径 → 仓库相对路径（/repo/ 之后的部分）；已是相对路径则原样返回"""
+    if not p:
+        return p
+    if "/repo/" in p:
+        return p.split("/repo/", 1)[1]
+    if p.startswith("repo/"):
+        return p[5:]
+    return p
+
+
+def _migrate_image_paths(conn):
+    """一次性把 images 里的绝对路径改写成仓库相对路径（跨机器可移植）"""
+    rows = conn.execute(
+        "SELECT id, images FROM questions WHERE images LIKE '%/repo/%'"
+    ).fetchall()
+    if not rows:
+        return
+    for r in rows:
+        try:
+            paths = json.loads(r["images"])
+        except Exception:
+            continue
+        new = [_to_rel_image_path(p) for p in paths]
+        conn.execute("UPDATE questions SET images = ? WHERE id = ?",
+                     (json.dumps(new, ensure_ascii=False), r["id"]))
+    conn.commit()
+    print(f"[gwy-quiz] 图片路径已迁移为相对路径（{len(rows)} 题）")
+
+
+def _migrate_question_data(conn):
+    """老版本打包的题库缺 images / shared_passage 数据（列后补的，内容是空的）。
+    代码旁的 data/gwy_quiz.db 是随包发布的完整题库：
+    比它旧就从它回填——只填当前为空的字段、只插缺失的题（按 paper+qid 匹配），
+    不覆盖任何已有数据，progress 表完全不动。"""
+    if getattr(sys, "frozen", False):
+        return
+    bundled = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "data", "gwy_quiz.db")
+    if not os.path.isfile(bundled):
+        return
+    try:
+        if os.path.samefile(bundled, DB_PATH):
+            return
+    except Exception:
+        return
+
+    def _img_count(c):
+        try:
+            return c.execute(
+                "SELECT COUNT(*) FROM questions WHERE images IS NOT NULL"
+                " AND images != '' AND images != '[]'").fetchone()[0]
+        except Exception:
+            return 0
+
+    src = sqlite3.connect(f"file:{bundled}?mode=ro", uri=True)
+    try:
+        src_imgs = _img_count(src)
+        src_total = src.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
+    finally:
+        src.close()
+    cur_imgs = _img_count(conn)
+    cur_total = conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
+    if cur_imgs >= src_imgs and cur_total >= src_total:
+        return  # 当前库不比随包库旧，无需回填
+
+    conn.execute("ATTACH DATABASE ? AS src", (bundled,))
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS src.idx_src_pq ON questions(paper, qid)")
+        r1 = conn.execute(
+            """UPDATE questions SET
+                 images = (SELECT s.images FROM src.questions s
+                           WHERE s.paper = questions.paper AND s.qid = questions.qid)
+               WHERE (images IS NULL OR images = '' OR images = '[]')
+                 AND EXISTS (SELECT 1 FROM src.questions s
+                             WHERE s.paper = questions.paper AND s.qid = questions.qid
+                               AND s.images IS NOT NULL AND s.images != '' AND s.images != '[]')"""
+        ).rowcount
+        r1 += conn.execute(
+            """UPDATE questions SET
+                 shared_passage = (SELECT s.shared_passage FROM src.questions s
+                                   WHERE s.paper = questions.paper AND s.qid = questions.qid)
+               WHERE (shared_passage IS NULL OR shared_passage = '')
+                 AND EXISTS (SELECT 1 FROM src.questions s
+                             WHERE s.paper = questions.paper AND s.qid = questions.qid
+                               AND s.shared_passage IS NOT NULL AND s.shared_passage != '')"""
+        ).rowcount
+        r2 = conn.execute(
+            """INSERT INTO questions (qid, paper, region, year, module, subtype, seq,
+                                      stem, option_a, option_b, option_c, option_d,
+                                      answer, analysis, source_file, shared_passage, images)
+               SELECT s.qid, s.paper, s.region, s.year, s.module, s.subtype, s.seq,
+                      s.stem, s.option_a, s.option_b, s.option_c, s.option_d,
+                      s.answer, s.analysis, s.source_file, s.shared_passage, s.images
+               FROM src.questions s
+               WHERE NOT EXISTS (SELECT 1 FROM questions t
+                                 WHERE t.paper = s.paper AND t.qid = s.qid)"""
+        ).rowcount
+        conn.commit()
+        if r1 or r2:
+            print(f"[gwy-quiz] 题库数据已随包回填（更新 {r1} 题，新增 {r2} 题）")
+    finally:
+        conn.execute("DETACH DATABASE src")
+
+
+# ---------- 图片按需解析：本地 repo → 缓存目录 → GitHub 下载 ----------
+
+IMAGE_REMOTE_BASE = "https://raw.githubusercontent.com/ERRRC/xingcezhenti/main"
+
+
+def _image_cache_dir():
+    d = os.path.join(_app_support_dir(), "images")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def resolve_image(path):
+    """把 DB 里的图片路径解析成本地可用文件，返回本地路径或 None
+    顺序：1) 开发机 repo/  2) 用户缓存  3) 从 GitHub 原仓库下载并缓存"""
+    if not path:
+        return None
+    rel = _to_rel_image_path(path)
+
+    # 1) 开发机：源码旁的 repo/
+    here = os.path.dirname(os.path.abspath(__file__))
+    local = os.path.join(here, "repo", rel)
+    if os.path.isfile(local):
+        return local
+
+    # 2) 缓存目录
+    cached = os.path.join(_image_cache_dir(), rel)
+    if os.path.isfile(cached) and os.path.getsize(cached) > 0:
+        return cached
+
+    # 3) 从 GitHub 下载并缓存
+    import urllib.request
+    from urllib.parse import quote
+    url = f"{IMAGE_REMOTE_BASE}/{quote(rel)}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "gwy-quiz"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read()
+        os.makedirs(os.path.dirname(cached), exist_ok=True)
+        with open(cached, "wb") as f:
+            f.write(data)
+        return cached
+    except Exception as e:
+        print(f"[gwy-quiz] 图片下载失败 {rel}: {e}")
+        return None
 
 
 def record_answer(conn, question_id, chosen, correct):

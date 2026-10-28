@@ -260,10 +260,12 @@ class QuizCard(QWidget):
                 w.deleteLater()
         self._image_host.hide()
 
-    def _add_image(self, abs_path):
-        if not abs_path or not os.path.isfile(abs_path):
+    def _add_image(self, path):
+        from db import resolve_image
+        local = resolve_image(path)
+        if not local:
             return
-        pm = QPixmap(abs_path)
+        pm = QPixmap(local)
         if pm.isNull():
             return
         # 限制宽度：用当前 scroll viewport 宽 - 20px 余量，防止横向撑出
