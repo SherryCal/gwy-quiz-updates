@@ -185,19 +185,19 @@ def _bucket(period):
 
 
 def _period_where(period, conn):
-    """返回 (where_clause, params) 限定该 period 的时间范围"""
-    # SQLite datetime('now', 'localtime') 是当前本地时间
+    """返回 (where_clause, params) 限定该 period 的时间范围
+    注意：last_at 存的就是本地时间(datetime('now','localtime'))，
+    查询时不能再加 'localtime' 修饰符，否则会被二次 +8 小时"""
     if period == "day":
-        return "AND date(p.last_at, 'localtime') = date('now', 'localtime')", []
+        return "AND date(p.last_at) = date('now', 'localtime')", []
     if period == "week":
-        # SQLite 的周一起始：strftime('%W', date) 返回周数，新年第1周从第一个周一开始
         return (
-            "AND strftime('%Y-W%W', p.last_at, 'localtime') = strftime('%Y-W%W', date('now','localtime'), 'localtime')",
+            "AND strftime('%Y-W%W', p.last_at) = strftime('%Y-W%W', date('now','localtime'))",
             [],
         )
     if period == "month":
         return (
-            "AND strftime('%Y-%m', p.last_at, 'localtime') = strftime('%Y-%m', date('now','localtime'), 'localtime')",
+            "AND strftime('%Y-%m', p.last_at) = strftime('%Y-%m', date('now','localtime'))",
             [],
         )
     return "", []
@@ -260,7 +260,7 @@ def stats_trend(conn, period="day", limit=7):
     day: 最近 7 天, week: 最近 8 周, month: 最近 6 月"""
     fmt = _bucket(period)
     rows = conn.execute(
-        f"""SELECT strftime('{fmt}', p.last_at, 'localtime') bucket,
+        f"""SELECT strftime('{fmt}', p.last_at) bucket,
                    COALESCE(SUM(p.attempts),0) attempts,
                    COALESCE(SUM(p.wrong),0) wrong,
                    COUNT(DISTINCT p.question_id) unique_q
@@ -288,7 +288,7 @@ def _count_streak(conn, period):
     """计算连续 N 个 period 都至少做了 1 道题"""
     fmt = _bucket(period)
     rows = conn.execute(
-        f"""SELECT DISTINCT strftime('{fmt}', p.last_at, 'localtime') bucket
+        f"""SELECT DISTINCT strftime('{fmt}', p.last_at) bucket
             FROM progress p
             WHERE p.last_at IS NOT NULL
             ORDER BY bucket DESC"""

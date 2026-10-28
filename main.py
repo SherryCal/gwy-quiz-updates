@@ -139,6 +139,20 @@ class App(QWidget):
 
     def _open_popup(self, module=None, wrong_only=False, paper=None):
         from popup import PopupQuiz
+        # 已存在弹窗：复用同一个，按新条件刷新题目，不再多开
+        for dlg in list(self._popups):
+            dlg._module = module
+            dlg._wrong_only = wrong_only
+            dlg._paper = paper
+            dlg._paper_queue = []
+            dlg._paper_idx = 0
+            for b in dlg.card._buttons.values():
+                b.show()
+            dlg.load_next()
+            dlg.showNormal()
+            dlg.raise_()
+            dlg.activateWindow()
+            return
         dlg = PopupQuiz(self._conn, module=module, wrong_only=wrong_only, paper=paper)
         dlg.setAttribute(Qt.WA_DeleteOnClose)
         dlg.finished.connect(lambda r, d=dlg: self._popups.remove(d) if d in self._popups else None)
