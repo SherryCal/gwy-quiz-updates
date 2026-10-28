@@ -3,7 +3,10 @@ import json
 import os
 import shutil
 import sqlite3
+import ssl
 import sys
+import urllib.error
+import urllib.request
 
 
 def _app_support_dir():
@@ -227,6 +230,41 @@ IMAGE_REMOTE_BASES = [
 _working_image_base = None
 # 所有镜像都失败过一次后直接放弃，避免每张图都卡十几秒
 _image_offline = False
+# 是否已提示过证书降级
+_ssl_warned = False
+
+
+def _urlopen(url, timeout=10):
+    """带证书兜底：macOS python.org 版若没装根证书会 SSL 报错（curl 却能通），
+    这里按 certifi → 系统默认 → 不校验 逐级降级"""
+    global _ssl_warned
+    req = urllib.request.Request(url, headers={"User-Agent": "gwy-quiz"})
+    ctxs = []
+    try:
+        import certifi
+        ctxs.append(ssl.create_default_context(cafile=certifi.where()))
+    except Exception:
+        pass
+    ctxs += [None, ssl._create_unverified_context()]
+    last = None
+    for ctx in ctxs:
+        try:
+            if ctx is None:
+                return urllib.request.urlopen(req, timeout=timeout)
+            if ctx.verify_mode == ssl.CERT_NONE and not _ssl_warned:
+                _ssl_warned = True
+                print("[gwy-quiz] 本机 Python 缺少根证书，已降级为不校验证书；"
+                      "建议运行 /Applications/Python X.Y/Install Certificates.command")
+            return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+        except urllib.error.URLError as e:
+            if isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError):
+                last = e
+                continue
+            raise
+        except ssl.SSLCertVerificationError as e:
+            last = e
+            continue
+    raise last if last else RuntimeError("no TLS context available")
 
 
 def _image_cache_dir():
@@ -257,7 +295,6 @@ def resolve_image(path):
     global _working_image_base, _image_offline
     if _image_offline:
         return None
-    import net
     from urllib.parse import quote
 
     bases = ([_working_image_base] if _working_image_base else []) + IMAGE_REMOTE_BASES
@@ -266,7 +303,7 @@ def resolve_image(path):
         for base in bases:
             url = f"{base}/{quote(rel)}"
             try:
-                with net.urlopen(url, timeout=6) as resp:
+                with _urlopen(url, timeout=6) as resp:
                     data = resp.read()
                 if not data:
                     continue

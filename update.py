@@ -10,6 +10,7 @@
 import hashlib
 import json
 import os
+import ssl
 import sys
 import urllib.request
 import urllib.error
@@ -33,6 +34,41 @@ REPO_BASES = [
 _working_base = None
 # 记录最后一次真实错误，方便在界面上显示原因
 _last_error = None
+# 是否已提示过证书降级
+_ssl_warned = False
+
+
+def _urlopen(url, timeout=6, headers=None):
+    """带证书兜底：macOS python.org 版若没装根证书会 SSL 报错（curl 却能通），
+    这里按 certifi → 系统默认 → 不校验 逐级降级"""
+    global _ssl_warned
+    req = urllib.request.Request(url, headers=headers or {"User-Agent": "gwy-quiz-update"})
+    ctxs = []
+    try:
+        import certifi
+        ctxs.append(ssl.create_default_context(cafile=certifi.where()))
+    except Exception:
+        pass
+    ctxs += [None, ssl._create_unverified_context()]
+    last = None
+    for ctx in ctxs:
+        try:
+            if ctx is None:
+                return urllib.request.urlopen(req, timeout=timeout)
+            if ctx.verify_mode == ssl.CERT_NONE and not _ssl_warned:
+                _ssl_warned = True
+                print("[gwy-quiz] 本机 Python 缺少根证书，已降级为不校验证书；"
+                      "建议运行 /Applications/Python X.Y/Install Certificates.command")
+            return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+        except urllib.error.URLError as e:
+            if isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError):
+                last = e
+                continue
+            raise
+        except ssl.SSLCertVerificationError as e:
+            last = e
+            continue
+    raise last if last else RuntimeError("no TLS context available")
 
 
 def _http_get(path, timeout=6):
@@ -43,9 +79,7 @@ def _http_get(path, timeout=6):
         # TLS 握手偶发超时，每个镜像多试一次
         for attempt in range(2):
             try:
-                import net
-                with net.urlopen(f"{base}/{path}", timeout=timeout,
-                                 headers={"User-Agent": "gwy-quiz-update"}) as r:
+                with _urlopen(f"{base}/{path}", timeout=timeout) as r:
                     data = r.read().decode("utf-8", errors="replace")
                 _working_base = base
                 return data
@@ -58,7 +92,7 @@ def _http_get(path, timeout=6):
 # 要推到 git 的文件白名单（只 .py + version.txt + requirements.txt）
 PUSH_FILES = [
     "main.py", "main_window.py", "popup.py", "quiz_card.py",
-    "db.py", "importer.py", "download.py", "update.py", "net.py",
+    "db.py", "importer.py", "download.py", "update.py",
     "version.txt",
 ]
 
