@@ -24,10 +24,10 @@ GH_REPO = "gwy-quiz-updates"
 GH_BRANCH = "main"
 # ============================
 
-# 国内直连 raw.githubusercontent.com 常常超时，优先走 jsDelivr（有国内 CDN）
+# raw 内容最新；jsDelivr 的 branch 解析缓存最长 12 小时，只作 raw 不通时的兜底
 REPO_BASES = [
-    f"https://cdn.jsdelivr.net/gh/{GH_USER}/{GH_REPO}@{GH_BRANCH}",
     f"https://raw.githubusercontent.com/{GH_USER}/{GH_REPO}/{GH_BRANCH}",
+    f"https://cdn.jsdelivr.net/gh/{GH_USER}/{GH_REPO}@{GH_BRANCH}",
 ]
 # 记住第一个可用的镜像，避免每个文件都重试超时
 _working_base = None
@@ -108,7 +108,8 @@ def check_and_update(current_version, progress=None):
                        f"真实错误：{detail}\n\n"
                        "可尝试：换网络 / 开代理 / 使用已下载好的完整安装包。")
 
-    if remote_ver == current_version:
+    # 版本号格式 YYYYMMDD.HHMM 可直接字符串比较；远程更旧说明镜像缓存落后
+    if remote_ver <= current_version:
         return False, f"当前版本已是最新（v{current_version}）"
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
