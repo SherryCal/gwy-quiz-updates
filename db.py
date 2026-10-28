@@ -257,26 +257,27 @@ def resolve_image(path):
     global _working_image_base, _image_offline
     if _image_offline:
         return None
-    import urllib.request
+    import net
     from urllib.parse import quote
 
     bases = ([_working_image_base] if _working_image_base else []) + IMAGE_REMOTE_BASES
-    for base in bases:
-        url = f"{base}/{quote(rel)}"
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "gwy-quiz"})
-            with urllib.request.urlopen(req, timeout=4) as resp:
-                data = resp.read()
-            if not data:
+    # 冷 TLS 握手偶尔要 5-6 秒，整体再来一轮
+    for attempt in range(2):
+        for base in bases:
+            url = f"{base}/{quote(rel)}"
+            try:
+                with net.urlopen(url, timeout=6) as resp:
+                    data = resp.read()
+                if not data:
+                    continue
+                os.makedirs(os.path.dirname(cached), exist_ok=True)
+                with open(cached, "wb") as f:
+                    f.write(data)
+                _working_image_base = base
+                return cached
+            except Exception as e:
+                print(f"[gwy-quiz] 镜像下载失败 {base}: {e}")
                 continue
-            os.makedirs(os.path.dirname(cached), exist_ok=True)
-            with open(cached, "wb") as f:
-                f.write(data)
-            _working_image_base = base
-            return cached
-        except Exception as e:
-            print(f"[gwy-quiz] 镜像下载失败 {base}: {e}")
-            continue
 
     _image_offline = True
     print(f"[gwy-quiz] 图片下载失败（所有镜像不可用，本次运行不再尝试）{rel}")

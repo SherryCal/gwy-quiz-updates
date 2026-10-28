@@ -31,31 +31,34 @@ REPO_BASES = [
 ]
 # 记住第一个可用的镜像，避免每个文件都重试超时
 _working_base = None
+# 记录最后一次真实错误，方便在界面上显示原因
+_last_error = None
 
 
 def _http_get(path, timeout=6):
-    global _working_base
+    global _working_base, _last_error
     bases = ([_working_base] if _working_base else []) + REPO_BASES
     last_err = None
     for base in bases:
         # TLS 握手偶发超时，每个镜像多试一次
         for attempt in range(2):
             try:
-                req = urllib.request.Request(
-                    f"{base}/{path}", headers={"User-Agent": "gwy-quiz-update"})
-                with urllib.request.urlopen(req, timeout=timeout) as r:
+                import net
+                with net.urlopen(f"{base}/{path}", timeout=timeout,
+                                 headers={"User-Agent": "gwy-quiz-update"}) as r:
                     data = r.read().decode("utf-8", errors="replace")
                 _working_base = base
                 return data
             except Exception as e:
                 last_err = e
+                _last_error = f"{base} → {type(e).__name__}: {e}"
                 continue
     raise last_err if last_err else RuntimeError("no mirror available")
 
 # 要推到 git 的文件白名单（只 .py + version.txt + requirements.txt）
 PUSH_FILES = [
     "main.py", "main_window.py", "popup.py", "quiz_card.py",
-    "db.py", "importer.py", "download.py", "update.py",
+    "db.py", "importer.py", "download.py", "update.py", "net.py",
     "version.txt",
 ]
 
@@ -100,8 +103,9 @@ def check_and_update(current_version, progress=None):
 
     remote_ver = _remote_version()
     if remote_ver is None:
+        detail = _last_error or "未知错误"
         return False, ("无法连接更新服务器\n\n"
-                       "常见原因：网络访问 GitHub 超时（国内直连不通）。\n"
+                       f"真实错误：{detail}\n\n"
                        "可尝试：换网络 / 开代理 / 使用已下载好的完整安装包。")
 
     if remote_ver == current_version:
