@@ -256,6 +256,10 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 
+    # 让 Ctrl+C 能正常终止 Qt 事件循环（否则终端卡死、回显乱套）
+    import signal
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
     # 先测 PyQt5 能不能正常起来
     print("[gwy-quiz] PyQt5 启动中...", flush=True)
 
