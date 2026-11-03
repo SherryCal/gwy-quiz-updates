@@ -93,7 +93,7 @@ def _http_get(path, timeout=6):
 PUSH_FILES = [
     "main.py", "main_window.py", "popup.py", "quiz_card.py",
     "db.py", "importer.py", "download.py", "update.py",
-    "version.txt",
+    "report_dialog.py", "version.txt",
 ]
 
 

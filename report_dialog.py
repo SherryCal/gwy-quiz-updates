@@ -334,7 +334,7 @@ class ReportDialog(QDialog):
         self.resize(880, 640)
         self.setStyleSheet(DIALOG_STYLE)
         # 和 popup 统一：无边框 + 自绘黑标题栏（有 PyObjC 时自动透明黑）
-        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_NoSystemBackground, True)
         from quiz_card import _make_palette
         self.setPalette(_make_palette())
@@ -378,8 +378,9 @@ class ReportDialog(QDialog):
     def showEvent(self, event):
         super().showEvent(event)
         from main_window import apply_macos_transparent_titlebar
-        if apply_macos_transparent_titlebar(self):
-            self._bar.hide()
+        # 只修正 macOS 窗口层级/行为，自绘标题栏保留（关闭按钮要在前端可见）
+        apply_macos_transparent_titlebar(self)
+        self._bar.show()
 
     # --- 标题栏拖动（无边框后需要自绘）---
     def mousePressEvent(self, e):

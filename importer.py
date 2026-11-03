@@ -1,6 +1,6 @@
 """解析 xingcezhenti 仓库的 markdown 真题并导入 SQLite
-改动：clean_html 存 <img> 路径、split_materials 扩到所有模块、
-     每道题存 shared_passage 和 images（绝对路径）
+改动：clean_html 存 <img> 路径、材料按题型分组（常识判断不取材料）、
+     每道题存 shared_passage 和 images（仓库相对路径）
 """
 import json
 import os
@@ -50,6 +50,8 @@ def clean_html(text, base_dir=None):
     text = HTML_TAG_RE.sub("", text)
     text = text.replace("&nbsp;", " ").replace("&amp;", "&")
     text = OPT_LINE_RE.sub("", text)
+    # 判断题在源文件里的占位符（没有选项行）
+    text = re.sub(r"^\s*-\s*（选项）\[\]\s*$", "", text, flags=re.M)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip(), images
 
@@ -63,9 +65,10 @@ def parse_frontmatter(text):
     return meta, text
 
 
-def split_materials(body):
-    """返回 [(材料号, 起始offset, 结束offset, 材料正文)] 列表
-    所有模块只要 md 里有 ## 材料 N 标记都会提取
+def split_materials(body, heads, full_range=False):
+    """返回 [(材料号, 起始offset, 组结束offset, 材料正文)] 列表
+    full_range=True（资料分析）：材料一直管到下一个材料为止。
+    其它模块：材料只管到下一个"题型不同"的题（如片段阅读材料不串到逻辑填空/判断题）。
     """
     mats = []
     matches = list(MATERIAL_RE.finditer(body))
@@ -75,10 +78,16 @@ def split_materials(body):
         num = m.group(1)
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
-        next_q = re.search(r"^(?:##|###)\s*第\s*\d+\s*题", body[start:end], re.M)
-        text_end = start + next_q.start() if next_q else end
-        # 材料正文只做基础 clean（不去 img，保留 <img> 让调用方统一处理）
-        mats.append((num, m.start(), end, body[start:text_end].strip()))
+        text_end = end
+        if not full_range:
+            qheads = [h for h in heads if start <= h.start() < end]
+            if qheads:
+                first_sub = qheads[0].group(3).strip()
+                for h in qheads[1:]:
+                    if h.group(3).strip() != first_sub:
+                        text_end = h.start()
+                        break
+        mats.append((num, m.start(), text_end, body[start:text_end].strip()))
     return mats
 
 
@@ -115,8 +124,9 @@ def parse_paper(path):
 
     module = meta.get("模块", "")
     is_ra = "资料分析" in module
-    # 所有模块都尝试提取共享材料（之前只给资料分析做）
-    mats = split_materials(body)
+    # 常识判断没有材料题，源文件里的 ## 材料 是错标/冗余，直接忽略
+    use_material = "常识判断" not in module
+    mats = split_materials(body, heads, full_range=is_ra) if use_material else []
 
     questions = []
     for i, h in enumerate(heads):
@@ -132,38 +142,41 @@ def parse_paper(path):
 
         mat_num, mat_raw = find_material_for_offset(mats, h.start())
 
-        if is_ra and ans_m:
-            ans_before = seg[: ans_m.start()].strip()
-            ans_before = re.sub(r"^##\s*材料\s*\S+\s*\n", "", ans_before, count=1).strip()
-            stem, imgs = clean_html(ans_before, base_dir)
-            analysis_body = seg[ans_m.end():].strip()
-            analysis_clean, a_imgs = clean_html(analysis_body, base_dir)
-            imgs.extend(a_imgs)
-            opts = extract_ra_options(analysis_body)
-            shared_passage = None
-            if mat_raw:
-                mat_text, m_imgs = clean_html(mat_raw, base_dir)
-                imgs = m_imgs + imgs
+        # 选项统一从题干里的 - **A**. 行解析（资料分析也一样，之前只从解析里抠导致大量丢选项）
+        stem_part = seg[: ans_m.start()].strip()
+        options = dict(OPT_RE.findall(stem_part))
+        first_opt = re.search(r"^-\s*\*\*A\*\*\.", stem_part, re.M)
+        raw_stem = stem_part[: first_opt.start()].strip() if first_opt else stem_part.strip()
+        stem, imgs = clean_html(raw_stem, base_dir)
+
+        # 解析正文
+        an_m = ANAL_RE.search(seg)
+        raw_analysis = seg[an_m.end():].strip() if an_m else seg[ans_m.end():].strip()
+        raw_analysis = re.sub(r"\n?-{3,}\s*$", "", raw_analysis).strip()
+        analysis_clean, a_imgs = clean_html(raw_analysis, base_dir)
+        imgs.extend(a_imgs)
+
+        # 资料分析老题库的选项写在解析里（A项：...），题干没选项时兜底
+        if not any(options.values()) and is_ra:
+            options = extract_ra_options(raw_analysis)
+
+        # 判断题（题干末尾括号、无 A-D 选项、答案为 A/B）补成"正确/错误"两个选项
+        if not any(options.values()) and answer in ("A", "B"):
+            options = {"A": "正确", "B": "错误"}
+
+        opts = {k: clean_html(v.replace("✅", "").strip(), base_dir)[0]
+                for k, v in options.items()}
+
+        shared_passage = None
+        if mat_raw:
+            mat_text, m_imgs = clean_html(mat_raw, base_dir)
+            imgs = m_imgs + imgs
+            if is_ra:
                 # 资料分析：材料拼进 stem 前面（历史行为，保持兼容）
                 stem = f"【材料{mat_num}】\n{mat_text}\n\n{stem}" if stem else f"【材料{mat_num}】\n{mat_text}"
-        else:
-            stem_part = seg[: ans_m.start()].strip() if ans_m else seg.strip()
-            options = dict(OPT_RE.findall(stem_part))
-            first_opt = re.search(r"^-\s*\*\*A\*\*\.", stem_part, re.M)
-            raw_stem = stem_part[: first_opt.start()].strip() if first_opt else stem_part.strip()
-            stem, imgs = clean_html(raw_stem, base_dir)
-            shared_passage = None
-            # 非资料分析模块也存 shared_passage 字段（GUI 单独显示，不拼进 stem）
-            if mat_raw:
-                mat_text, m_imgs = clean_html(mat_raw, base_dir)
-                imgs = m_imgs + imgs
+            else:
+                # 其它模块：GUI 单独显示材料，不拼进 stem
                 shared_passage = f"【材料{mat_num}】{mat_text}" if mat_text else None
-            an_m = ANAL_RE.search(seg)
-            raw_analysis = seg[an_m.end():].strip() if an_m else ""
-            raw_analysis = re.sub(r"\n?-{3,}\s*$", "", raw_analysis).strip()
-            analysis_clean, a_imgs = clean_html(raw_analysis, base_dir)
-            imgs.extend(a_imgs)
-            opts = {k: clean_html(v.replace("✅", "").strip(), base_dir)[0] for k, v in options.items()}
 
         if not stem or not answer:
             continue

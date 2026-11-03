@@ -183,8 +183,9 @@ class PopupQuiz(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        if apply_macos_transparent_titlebar(self):
-            self._bar.hide()
+        # 只修正 macOS 窗口层级/行为，自绘标题栏保留（关闭/最小化按钮要在前端可见）
+        apply_macos_transparent_titlebar(self)
+        self._bar.show()
         self.raise_(); self.activateWindow(); self.setFocus()
 
     def resizeEvent(self, e):
@@ -196,16 +197,18 @@ class PopupQuiz(QWidget):
     def load_next(self):
         if self._paper:
             if not self._paper_queue:
+                # 套卷模式也只出没刷过的题，避免重复
                 self._paper_queue = fetch_questions(
-                    self.conn, paper=self._paper, limit=1000, random_order=False)
+                    self.conn, paper=self._paper, unanswered_only=True,
+                    limit=1000, random_order=False)
                 self._paper_idx = 0
             if self._paper_idx < len(self._paper_queue):
                 q = self._paper_queue[self._paper_idx]
                 self._paper_idx += 1
                 self.card.show_question(q)
                 return
-            self.card._meta.setText(f"✅ {self._paper} 全部刷完")
-            self.card._stem.setText("可以换张卷或切回随机刷题。")
+            self.card._meta.setText(f"✅ {self._paper} 没有新题了")
+            self.card._stem.setText("这张卷已经刷完，可以换张卷或切回随机刷题。")
             for b in self.card._buttons.values():
                 b.hide()
             self._paper = None
@@ -214,6 +217,7 @@ class PopupQuiz(QWidget):
 
         qs = fetch_questions(self.conn, module=self._module,
                              wrong_only=self._wrong_only,
+                             unanswered_only=not self._wrong_only,
                              limit=1, random_order=True)
         if qs:
             self.card.show_question(qs[0])

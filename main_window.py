@@ -207,6 +207,7 @@ class MainWindow(QMainWindow):
         self.wrong_btn.setCheckable(True)
         self.new_btn = QPushButton("只做新题"); self.new_btn.setProperty("class", "filter")
         self.new_btn.setCheckable(True)
+        self.new_btn.setChecked(True)  # 默认排除刷过的题，避免重复
         row.addWidget(self.wrong_btn); row.addWidget(self.new_btn)
         ll.addLayout(row)
 
@@ -231,16 +232,17 @@ class MainWindow(QMainWindow):
 
         for cb in (self.module_cb, self.year_cb, self.region_cb, self.paper_cb):
             cb.currentIndexChanged.connect(self.reload)
-        self.wrong_btn.toggled.connect(self.reload)
-        self.new_btn.toggled.connect(self.reload)
+        self.wrong_btn.toggled.connect(self._on_filter_toggled)
+        self.new_btn.toggled.connect(self._on_filter_toggled)
 
         self._fill_filters()
         self.reload()
 
     def showEvent(self, event):
         super().showEvent(event)
-        if apply_macos_transparent_titlebar(self):
-            self.title_bar.hide()
+        # 只修正 macOS 窗口层级/行为，自绘标题栏保留（关闭/最小化按钮要在前端可见）
+        apply_macos_transparent_titlebar(self)
+        self.title_bar.show()
 
     def _make_combo(self, layout, placeholder):
         cb = QComboBox(); cb.addItem(placeholder, None)
@@ -258,6 +260,16 @@ class MainWindow(QMainWindow):
         for p in list_filter_values(self.conn, "paper"):
             if p:
                 self.paper_cb.addItem(p, p)
+
+    def _on_filter_toggled(self, checked):
+        """错题重练 / 只做新题 互斥，避免两个条件叠加后列表为空"""
+        sender = self.sender()
+        other = self.new_btn if sender is self.wrong_btn else self.wrong_btn
+        if checked and other.isChecked():
+            other.blockSignals(True)
+            other.setChecked(False)
+            other.blockSignals(False)
+        self.reload()
 
     def reload(self):
         self._questions = fetch_questions(
