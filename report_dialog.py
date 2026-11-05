@@ -363,7 +363,7 @@ class ReportDialog(QDialog):
         bar_l.addWidget(min_btn)
         close_btn = QPushButton("×"); close_btn.setFixedSize(22, 16)
         close_btn.setStyleSheet(btn_style)
-        close_btn.clicked.connect(self.accept)
+        close_btn.clicked.connect(self._close)
         bar_l.addWidget(close_btn)
         root.addWidget(bar)
         self._bar = bar
@@ -380,7 +380,19 @@ class ReportDialog(QDialog):
         from main_window import apply_macos_transparent_titlebar
         # 只修正 macOS 窗口层级/行为，自绘标题栏保留（关闭按钮要在前端可见）
         apply_macos_transparent_titlebar(self)
-        self._bar.show()
+        # 无论 PyObjC 是否生效，自绘标题栏都必须在，否则没有关闭按钮
+        self._bar.setVisible(True)
+        self._bar.raise_()
+
+    def _close(self):
+        self.reject()
+
+    def keyPressEvent(self, e):
+        # Esc 一定能关（兜底自绘 × 按钮失灵的情况）
+        if e.key() == Qt.Key_Escape:
+            self._close()
+            return
+        super().keyPressEvent(e)
 
     # --- 标题栏拖动（无边框后需要自绘）---
     def mousePressEvent(self, e):

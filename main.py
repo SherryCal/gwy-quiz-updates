@@ -58,6 +58,7 @@ class App(QWidget):
         self._conn = None
         self._main_win = None
         self._popups = []
+        self._report_dlg = None
         self._init_db()
         self._init_tray()
         # 首次启动不弹窗口，托盘常驻
@@ -209,8 +210,26 @@ class App(QWidget):
 
     def _show_report(self):
         from report_dialog import ReportDialog
+        # 不用 exec_()：模态嵌套事件循环一旦关闭按钮失灵会把整个程序锁死
+        dlg = self._report_dlg
+        if dlg is not None:
+            try:
+                dlg.showNormal()
+                dlg.raise_()
+                dlg.activateWindow()
+                return
+            except RuntimeError:  # 底层 C++ 对象已被销毁
+                self._report_dlg = None
         dlg = ReportDialog(self._conn, self)
-        dlg.exec_()
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        dlg.destroyed.connect(self._on_report_destroyed)
+        self._report_dlg = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _on_report_destroyed(self, _obj=None):
+        self._report_dlg = None
 
     def _check_update(self):
         from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel, QPlainTextEdit, QDialogButtonBox

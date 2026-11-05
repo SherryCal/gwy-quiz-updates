@@ -24,14 +24,16 @@ def apply_macos_transparent_titlebar(widget):
                             NSWindowCollectionBehaviorCanJoinAllSpaces,
                             NSWindowCollectionBehaviorFullScreenAuxiliary,
                             NSWindowCollectionBehaviorParticipatesInCycle)
-        # Qt 的 winId 不是 NSWindow 指针，要通过标题匹配找到真正的 NSWindow
-        title = widget.windowTitle()
+        # PyQt5 的 winId() 在 macOS 上返回的是 NSView 指针，先取它所属的 NSWindow。
+        # 之前按标题在 NSApp.windows() 里瞎匹配，可能拿到别的窗口（甚至菜单栏窗口），
+        # 把 layer/collectionBehavior 改错会导致窗口点不到、关不掉。
         ns_win = None
-        for w in NSApp.windows():
-            if w.title() == title or (not w.title() and widget.isVisible()):
-                # Qt 的 FramelessWindowHint 窗口标题常常为空，取第一个可见的
-                ns_win = w
-                break
+        try:
+            import objc
+            view = objc.objc_object(ctypes=(int,))(int(widget.winId()))
+            ns_win = view.window()
+        except Exception:
+            ns_win = None
         if ns_win is None and NSApp.keyWindow():
             ns_win = NSApp.keyWindow()
         if ns_win is None:

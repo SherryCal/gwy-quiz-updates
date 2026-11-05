@@ -202,8 +202,10 @@ class QuizCard(QWidget):
         self._meta.setText(
             f"{q['paper']} · {q['module']} / {q['subtype'] or '-'} · 第{q['seq']}题")
 
-        # 共享文章
+        # 共享文章：常识判断每题独立，任何情况下都不显示材料（兜底旧题库脏数据）
         passage = q.get("shared_passage") or ""
+        if q.get("module") == "常识判断":
+            passage = ""
         if passage:
             self._passage.setText(passage)
             self._passage.show()

@@ -100,7 +100,20 @@ def get_conn():
     conn.executescript(SCHEMA)
     _migrate(conn)  # 给旧库补新列
     _migrate_question_data(conn)  # 老包题库缺图/缺文章时从随包库回填
+    _fix_material_by_module(conn)  # 常识判断是单题独立，清掉旧库错挂的材料
     return conn
+
+
+def _fix_material_by_module(conn):
+    """常识判断每题独立，源文件里的 ## 材料 属于错标。
+    旧版 importer 给所有模块都挂了材料，这里对已有库做一次纠正（幂等、可重复执行）。"""
+    n = conn.execute(
+        "UPDATE questions SET shared_passage = NULL "
+        "WHERE module = '常识判断' AND shared_passage IS NOT NULL"
+    ).rowcount
+    if n:
+        conn.commit()
+        print(f"[gwy-quiz] 已清理常识判断误挂材料：{n} 题")
 
 
 def _migrate(conn):
